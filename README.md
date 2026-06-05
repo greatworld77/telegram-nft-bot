@@ -1,13 +1,10 @@
 # Telegram NFT Test Bot
 
-This is a simple Telegram bot for testing NFT image orders.
-
-It:
-- Welcomes user
-- Asks for image
-- Confirms image received
-- Asks for transaction hash
-- Starts 24-hour delivery message
+Features:
+- Asks user for image
+- Asks for payment transaction hash
+- Blocks duplicate transaction hashes
 - Sends order details to admin
+- Says NFT will be delivered within 24 hours
 
-This bot does not automatically mint NFTs.
+This is a test/order bot. It does not automatically mint NFTs.
