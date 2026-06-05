@@ -1,8 +1,11 @@
 import axios from "axios";
+import { Redis } from "@upstash/redis";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 const PAYMENT_ADDRESS = process.env.PAYMENT_ADDRESS;
+
+const redis = Redis.fromEnv();
 
 const PRICE_TEXT = "0.0001 USD / test payment";
 
@@ -30,10 +33,7 @@ export default async function handler(req, res) {
     }
 
     const message = req.body.message;
-
-    if (!message) {
-      return res.status(200).send("ok");
-    }
+    if (!message) return res.status(200).send("ok");
 
     const chatId = message.chat.id;
     const userId = message.from?.id || "Unknown";
@@ -64,6 +64,8 @@ Network: *Ethereum Sepolia Testnet*`
       const photo = message.photo[message.photo.length - 1];
       const fileId = photo.file_id;
 
+      await redis.set(`image:${chatId}`, fileId);
+
       await sendMessage(
         chatId,
         `✅ Image received successfully!
@@ -75,11 +77,11 @@ Amount: *${PRICE_TEXT}*
 Payment wallet:
 \`${PAYMENT_ADDRESS}\`
 
-After payment, send your transaction hash using this format:
+After payment, send your transaction hash like this:
 
 \`TX 0xYourTransactionHashHere\`
 
-After receiving your transaction hash, your NFT delivery timer of *24 hours* will start.`
+After receiving your transaction hash, your *24-hour NFT delivery timer* will start.`
       );
 
       await sendPhotoToAdmin(
@@ -97,16 +99,44 @@ Status: Waiting for transaction hash`
     }
 
     if (text.startsWith("TX ")) {
-      const txHash = text.replace("TX ", "").trim();
+      const txHash = text.replace("TX ", "").trim().toLowerCase();
 
       if (!txHash.startsWith("0x") || txHash.length < 20) {
         await sendMessage(
           chatId,
-          "❌ Invalid transaction hash format. Please send it like:\n\n`TX 0xYourTransactionHashHere`"
+          "❌ Invalid transaction hash format. Send it like:\n\n`TX 0xYourTransactionHashHere`"
         );
-
         return res.status(200).send("ok");
       }
+
+      const previousImage = await redis.get(`image:${chatId}`);
+
+      if (!previousImage) {
+        await sendMessage(
+          chatId,
+          "❌ Please send your image first before sending the transaction hash."
+        );
+        return res.status(200).send("ok");
+      }
+
+      const alreadyUsed = await redis.get(`tx:${txHash}`);
+
+      if (alreadyUsed) {
+        await sendMessage(
+          chatId,
+          "❌ This transaction hash has already been used. Please send a new valid transaction hash."
+        );
+        return res.status(200).send("ok");
+      }
+
+      await redis.set(`tx:${txHash}`, {
+        userId,
+        username,
+        chatId,
+        txHash,
+        imageFileId: previousImage,
+        createdAt: new Date().toISOString()
+      });
 
       await sendMessage(
         chatId,
@@ -124,7 +154,7 @@ You will receive your NFT within *24 hours*.`
 
       await sendMessage(
         ADMIN_CHAT_ID,
-        `💰 New NFT order payment hash received
+        `💰 New NFT order received
 
 User ID: \`${userId}\`
 Username: ${username}
@@ -132,6 +162,9 @@ Telegram Chat ID: \`${chatId}\`
 
 Transaction hash:
 \`${txHash}\`
+
+Image File ID:
+\`${previousImage}\`
 
 Delivery time: Within 24 hours`
       );
