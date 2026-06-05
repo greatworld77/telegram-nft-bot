@@ -5,14 +5,10 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 const PAYMENT_ADDRESS = process.env.PAYMENT_ADDRESS;
 
-let redis = null;
-
-if (
-  process.env.UPSTASH_REDIS_REST_URL &&
-  process.env.UPSTASH_REDIS_REST_TOKEN
-) {
-  redis = Redis.fromEnv();
-}
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL,
+  token: process.env.KV_REST_API_TOKEN
+});
 
 const PRICE_TEXT = "0.0001 USD / test payment";
 
@@ -38,11 +34,7 @@ async function sendPhotoToAdmin(fileId, caption) {
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
-      return res.status(200).send("Bot is running");
-    }
-
-    if (!BOT_TOKEN) {
-      return res.status(200).send("Missing BOT_TOKEN");
+      return res.status(200).send("Telegram NFT bot is running");
     }
 
     const message = req.body.message;
@@ -61,12 +53,15 @@ export default async function handler(req, res) {
         chatId,
         `👋 Welcome, ${firstName}!
 
-Send me an image and I will prepare it as a test NFT order.
+I can help you create a test NFT from your image.
 
-Price: *${PRICE_TEXT}*
+Please send me the image you want to turn into an NFT.
+
+Price for 1 NFT: *${PRICE_TEXT}*
 
 Network: *Ethereum Sepolia Testnet*`
       );
+
       return res.status(200).send("ok");
     }
 
@@ -74,23 +69,24 @@ Network: *Ethereum Sepolia Testnet*`
       const photo = message.photo[message.photo.length - 1];
       const fileId = photo.file_id;
 
-      if (redis) {
-        await redis.set(`image:${chatId}`, fileId);
-      }
+      await redis.set(`image:${chatId}`, fileId);
 
       await sendMessage(
         chatId,
-        `✅ Image received!
+        `✅ Image received successfully!
 
-Now send payment to:
+Now please make the payment.
 
-\`${PAYMENT_ADDRESS || "PAYMENT_ADDRESS not set"}\`
+Amount: *${PRICE_TEXT}*
+
+Payment wallet:
+\`${PAYMENT_ADDRESS}\`
 
 After payment, send your transaction hash like this:
 
 \`TX 0xYourTransactionHashHere\`
 
-Your 24-hour delivery timer will start after the hash is received.`
+After receiving your transaction hash, your *24-hour NFT delivery timer* will start.`
       );
 
       await sendPhotoToAdmin(
@@ -99,7 +95,7 @@ Your 24-hour delivery timer will start after the hash is received.`
 
 User ID: \`${userId}\`
 Username: ${username}
-Chat ID: \`${chatId}\`
+Telegram Chat ID: \`${chatId}\`
 
 Status: Waiting for transaction hash`
       );
@@ -113,33 +109,43 @@ Status: Waiting for transaction hash`
       if (!txHash.startsWith("0x") || txHash.length < 20) {
         await sendMessage(
           chatId,
-          "❌ Invalid hash. Send like:\n\n`TX 0xYourTransactionHashHere`"
+          "❌ Invalid transaction hash. Send it like:\n\n`TX 0xYourTransactionHashHere`"
         );
+
         return res.status(200).send("ok");
       }
 
-      if (redis) {
-        const alreadyUsed = await redis.get(`tx:${txHash}`);
+      const previousImage = await redis.get(`image:${chatId}`);
 
-        if (alreadyUsed) {
-          await sendMessage(
-            chatId,
-            "❌ This transaction hash has already been used."
-          );
-          return res.status(200).send("ok");
-        }
-
-        const previousImage = await redis.get(`image:${chatId}`);
-
-        await redis.set(`tx:${txHash}`, {
-          userId,
-          username,
+      if (!previousImage) {
+        await sendMessage(
           chatId,
-          txHash,
-          imageFileId: previousImage || "No image saved",
-          createdAt: new Date().toISOString()
-        });
+          "❌ Please send your image first before sending the transaction hash."
+        );
+
+        return res.status(200).send("ok");
       }
+
+      const alreadyUsed = await redis.get(`tx:${txHash}`);
+
+      if (alreadyUsed) {
+        await sendMessage(
+          chatId,
+          "❌ This transaction hash has already been used. Please send a new transaction hash."
+        );
+
+        return res.status(200).send("ok");
+      }
+
+      await redis.set(`tx:${txHash}`, {
+        used: true,
+        userId,
+        username,
+        chatId,
+        txHash,
+        imageFileId: previousImage,
+        createdAt: new Date().toISOString()
+      });
 
       await sendMessage(
         chatId,
@@ -150,30 +156,43 @@ Your 24-hour NFT delivery timer has started.
 Transaction hash:
 \`${txHash}\`
 
+Network: *Ethereum Sepolia Testnet*
+
 You will receive your NFT within *24 hours*.`
       );
 
       await sendMessage(
         ADMIN_CHAT_ID,
-        `💰 New NFT order
+        `💰 New NFT order received
 
 User ID: \`${userId}\`
 Username: ${username}
-Chat ID: \`${chatId}\`
+Telegram Chat ID: \`${chatId}\`
 
 Transaction hash:
 \`${txHash}\`
 
-Delivery: Within 24 hours`
+Image File ID:
+\`${previousImage}\`
+
+Delivery time: Within 24 hours`
       );
 
       return res.status(200).send("ok");
     }
 
-    await sendMessage(chatId, "Please send an image first.");
+    await sendMessage(
+      chatId,
+      `Please send an image first.
+
+If you already paid, send your transaction hash like this:
+
+\`TX 0xYourTransactionHashHere\``
+    );
+
     return res.status(200).send("ok");
   } catch (error) {
-    console.error("BOT ERROR:", error.message);
+    console.error("BOT ERROR:", error);
     return res.status(200).send("error");
   }
 }
